@@ -38,9 +38,9 @@ dependencies = [
 requires-python = ">=3.8"
 
 [project.urls]
-Homepage = "https://github.com/yourusername/drf-totp"
-Repository = "https://github.com/yourusername/drf-totp.git"
-Issues = "https://github.com/yourusername/drf-totp/issues"
+Homepage = "https://github.com/mohamed-alired/drf-totp"
+Repository = "https://github.com/mohamed-alired/drf-totp.git"
+Issues = "https://github.com/mohamed-alired/drf-totp/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/drf_totp"]
