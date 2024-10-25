@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "drf-totp"
+version = "0.1.0"
+description = "TOTP (Time-based One-Time Password) authentication for Django REST Framework"
+readme = "README.md"
+authors = [
+    { name = "djv-mo", email = "solutiond700@gmail.com" }
+]
+license = "MIT"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Web Environment",
+    "Framework :: Django",
+    "Framework :: Django :: 4.2",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+keywords = ["django", "rest", "framework", "totp", "authentication", "2fa", "mfa"]
+dependencies = [
+    "django>=4.2",
+    "djangorestframework>=3.14.0",
+    "pyotp>=2.8.0",
+]
+requires-python = ">=3.8"
+
+[project.urls]
+Homepage = "https://github.com/yourusername/drf-totp"
+Repository = "https://github.com/yourusername/drf-totp.git"
+Issues = "https://github.com/yourusername/drf-totp/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/drf_totp"]
