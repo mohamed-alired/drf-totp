@@ -9,5 +9,5 @@ example/settings_private.py
 /docs/_build/
 /dist/
 .eggs/
-
+.DS_Store
 .idea/
