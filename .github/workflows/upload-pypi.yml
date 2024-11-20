@@ -1,48 +1,32 @@
 name: Publish Python Package
 
 on:
-  push:
-    tags:
-      - 'v*'  
-      
+  release:
+    types: [published] 
+
 jobs:
-  deploy:
+  publish-to-pypi:
     runs-on: ubuntu-latest
-    
+
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.x'
-    
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install toml
-    
-    - name: Verify release version
-      env:
-        GITHUB_REF: ${{ github.ref }}
-      run: |
-        # Extract version from GitHub tag
-        RELEASE_VERSION=$(echo $GITHUB_REF | sed -e 's,.*/v,,')
-        
-        # Read version from pyproject.toml
-        PYPROJECT_VERSION=$(python -c "import toml; print(toml.load('pyproject.toml')['project']['version'])")
-        
-        # Compare versions
-        if [ "$RELEASE_VERSION" != "$PYPROJECT_VERSION" ]; then
-          echo "Version mismatch! Release tag ($RELEASE_VERSION) does not match pyproject.toml version ($PYPROJECT_VERSION)"
-          exit 1
-        fi
-    
-    - name: Build and publish
-      env:
-        TWINE_USERNAME: __token__
-        TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
-      run: |
-        python -m pip install build twine
-        python -m build
-        twine upload dist/*
+      - name: Check out code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.x 
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Build package
+        run: python -m build
+
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
+        run: twine upload dist/*
