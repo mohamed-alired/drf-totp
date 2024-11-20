@@ -1,17 +1,17 @@
-name: Create Release on Version Change
+name: Debug Release Creation
 
 on:
   push:
     branches: 
       - main
-      - master
 
 jobs:
-  check-version:
+  debug-version-release:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v4
+    - name: Checkout repository
+      uses: actions/checkout@v4
     
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -22,27 +22,34 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install toml requests
-    
-    - name: Check and Create Release
+
+    - name: Debug Version and Release Process
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # Read version from pyproject.toml
+        # Detailed debugging script
+        echo "=== Repository Information ==="
+        echo "Repository: ${{ github.repository }}"
+        echo "Ref: ${{ github.ref }}"
+        echo "Commit SHA: ${{ github.sha }}"
+        
+        echo -e "\n=== Python Version Check ==="
+        python --version
+        
+        echo -e "\n=== pyproject.toml Contents ==="
+        cat pyproject.toml
+        
+        echo -e "\n=== Extract Version from pyproject.toml ==="
         VERSION=$(python -c "import toml; print(toml.load('pyproject.toml')['project']['version'])")
+        echo "Extracted Version: $VERSION"
         
-        # Check if release with this version already exists
-        EXISTING_RELEASE=$(curl -s \
-          -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-          "https://api.github.com/repos/${{ github.repository }}/releases/tags/v$VERSION" \
-          | grep -q "message\":\"Not Found" && echo "not_found" || echo "found")
+        echo -e "\n=== Existing GitHub Releases ==="
+        gh release list --repo "${{ github.repository }}"
         
-        # If no existing release, create a new one
-        if [ "$EXISTING_RELEASE" == "not_found" ]; then
-          echo "Creating release for version $VERSION"
-          gh release create "v$VERSION" \
-            --repo "${{ github.repository }}" \
-            --title "Release $VERSION" \
-            --notes "Automated release for version $VERSION"
-        else
-          echo "Release for version $VERSION already exists"
-        fi
+        echo -e "\n=== Attempting to Create Release ==="
+        # Attempt to create release with verbose logging
+        gh release create "v$VERSION" \
+          --repo "${{ github.repository }}" \
+          --title "Release $VERSION" \
+          --notes "Automated release for version $VERSION" \
+          --verbose || echo "Release creation failed"
