@@ -5,6 +5,9 @@ on:
     branches: 
       - main
 
+permissions:
+  contents: write
+
 jobs:
   debug-version-release:
     runs-on: ubuntu-latest
