@@ -31,7 +31,7 @@ jobs:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
         run: |
-          VERSION=$(python setup.py --version)  # or extract from pyproject.toml
+          VERSION=$(grep -oP '(?<=^version = ")[^"]+' pyproject.toml)
           if ! curl -sL "https://pypi.org/pypi/drf_totp/$VERSION/json" | grep -q '"version"'; then
             twine upload dist/*
           else
