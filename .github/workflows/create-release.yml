@@ -22,34 +22,26 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install toml requests
-
+    
     - name: Debug Version and Release Process
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
-        # Detailed debugging script
-        echo "=== Repository Information ==="
-        echo "Repository: ${{ github.repository }}"
-        echo "Ref: ${{ github.ref }}"
-        echo "Commit SHA: ${{ github.sha }}"
-        
-        echo -e "\n=== Python Version Check ==="
-        python --version
-        
-        echo -e "\n=== pyproject.toml Contents ==="
-        cat pyproject.toml
-        
-        echo -e "\n=== Extract Version from pyproject.toml ==="
+        echo "=== Extracting Version from pyproject.toml ==="
         VERSION=$(python -c "import toml; print(toml.load('pyproject.toml')['project']['version'])")
         echo "Extracted Version: $VERSION"
-        
-        echo -e "\n=== Existing GitHub Releases ==="
-        gh release list --repo "${{ github.repository }}"
-        
-        echo -e "\n=== Attempting to Create Release ==="
-        # Attempt to create release with verbose logging
-        gh release create "v$VERSION" \
-          --repo "${{ github.repository }}" \
-          --title "Release $VERSION" \
-          --notes "Automated release for version $VERSION" \
-          --verbose || echo "Release creation failed"
+
+        echo -e "\n=== Checking for Existing Release ==="
+        if gh release view "v$VERSION" --repo "${{ github.repository }}" > /dev/null 2>&1; then
+          echo "Release v$VERSION already exists. Updating..."
+          gh release edit "v$VERSION" \
+            --repo "${{ github.repository }}" \
+            --title "Release $VERSION" \
+            --notes "Updated automated release for version $VERSION"
+        else
+          echo "Creating new release for v$VERSION..."
+          gh release create "v$VERSION" \
+            --repo "${{ github.repository }}" \
+            --title "Release $VERSION" \
+            --notes "Automated release for version $VERSION"
+        fi
