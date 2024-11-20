@@ -1,0 +1,48 @@
+name: Create Release on Version Change
+
+on:
+  push:
+    branches: 
+      - main
+      - master
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.x'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install toml requests
+    
+    - name: Check and Create Release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        # Read version from pyproject.toml
+        VERSION=$(python -c "import toml; print(toml.load('pyproject.toml')['project']['version'])")
+        
+        # Check if release with this version already exists
+        EXISTING_RELEASE=$(curl -s \
+          -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+          "https://api.github.com/repos/${{ github.repository }}/releases/tags/v$VERSION" \
+          | grep -q "message\":\"Not Found" && echo "not_found" || echo "found")
+        
+        # If no existing release, create a new one
+        if [ "$EXISTING_RELEASE" == "not_found" ]; then
+          echo "Creating release for version $VERSION"
+          gh release create "v$VERSION" \
+            --repo "${{ github.repository }}" \
+            --title "Release $VERSION" \
+            --notes "Automated release for version $VERSION"
+        else
+          echo "Release for version $VERSION already exists"
+        fi

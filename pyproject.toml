@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "drf-totp"
-version = "0.1.1"
+version = "0.1.2"
 description = "TOTP (Time-based One-Time Password) authentication for Django REST Framework"
 readme = "README.md"
 authors = [

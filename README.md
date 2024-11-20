@@ -59,24 +59,53 @@ TOTP_ISSUER_NAME = "Your App Name"
 
 ## Usage Example
 
-```python
-# Generate TOTP
-response = requests.post('/auth/otp/generate/')
-secret = response.json()['secret']
-otpauth_url = response.json()['otpauth_url']
+```javascript
+import axios from 'axios';
 
-# Verify TOTP
-response = requests.post('/auth/otp/verify/', {
-    'token': '123456'  # 6-digit TOTP token
-})
+// Generate TOTP
+export async function generateTotp() {
+  try {
+    const response = await axios.post('/auth/otp/generate/');
+    const { secret, otpauth_url } = response.data;
+    return { secret, otpauth_url };
+  } catch (error) {
+    console.error('Error generating TOTP:', error);
+    throw error;
+  }
+}
 
-# Check Status
-response = requests.get('/auth/otp/status/')
+// Verify TOTP
+export async function verifyTotp(token) {
+  try {
+    const response = await axios.post('/auth/otp/verify/', { token });
+    return response.data;
+  } catch (error) {
+    console.error('Error verifying TOTP:', error);
+    throw error;
+  }
+}
 
-# Validate TOTP
-response = requests.post('/auth/otp/validate/', {
-    'token': '123456'  # 6-digit TOTP token
-})
+// Check Status
+export async function checkStatus() {
+  try {
+    const response = await axios.get('/auth/otp/status/');
+    return response.data;
+  } catch (error) {
+    console.error('Error checking status:', error);
+    throw error;
+  }
+}
+
+// Validate TOTP
+export async function validateTotp(token) {
+  try {
+    const response = await axios.post('/auth/otp/validate/', { token });
+    return response.data;
+  } catch (error) {
+    console.error('Error validating TOTP:', error);
+    throw error;
+  }
+}
 ```
 
 ## License
