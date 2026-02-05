@@ -2,6 +2,82 @@
 
 TOTP (Time-based One-Time Password) authentication for Django REST Framework.
 
+## 📊 Complete Workflow
+
+### User Registration Flow
+
+```
+┌─────────────────┐
+│    Sign Up      │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐      ┌──────────────────┐
+│  POST /generate/│─────▶│  Scan QR Code    │
+└────────┬────────┘      └──────────────────┘
+         │                        │
+         │                        │
+         ▼                        ▼
+┌─────────────────┐      ┌──────────────────┐
+│  Enter 6-digit  │      │ Open Authenticator│
+│     Token       │      │   App (Google/   │
+└────────┬────────┘      │    Authy/etc)    │
+         │                └──────────────────┘
+         ▼
+┌─────────────────┐      ┌──────────────────────────┐
+│  POST /verify/  │─────▶│ DB: is_confirmed = True  │
+└────────┬────────┘      └──────────────────────────┘
+         │
+         ▼
+   ✅ 2FA Enabled
+```
+
+### Login Flow (with 2FA)
+
+```
+┌─────────────────┐
+│   Username &    │
+│    Password     │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐      ┌──────────────────┐
+│  GET /status/   │─────▶│  TOTP Enabled?   │
+└────────┬────────┘      └────────┬─────────┘
+         │                        │
+         │                   Yes  │
+         ▼                        ▼
+┌─────────────────┐      ┌──────────────────┐
+│ POST /validate/ │◀─────│  Enter 6-digit   │
+│  {token:123456} │      │   TOTP Code      │
+└────────┬────────┘      └──────────────────┘
+         │
+         ▼
+  ✅ Grant Access
+```
+
+### Disable 2FA Flow
+
+```
+┌─────────────────┐
+│  User Settings  │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐      ┌──────────────────┐
+│ POST /disable/  │◀─────│  Enter Current   │
+│  {token:123456} │      │   TOTP Token     │
+└────────┬────────┘      └──────────────────┘
+         │
+         ▼
+┌─────────────────────────┐
+│ DB: Delete TOTPDevice   │
+└─────────────────────────┘
+         │
+         ▼
+   ❌ 2FA Disabled
+```
+
 ## Features
 
 - Generate TOTP secrets for users
@@ -60,16 +136,16 @@ TOTP_ISSUER_NAME = "Your App Name"
 ## Usage Example
 
 ```javascript
-import axios from 'axios';
+import axios from "axios";
 
 // Generate TOTP
 export async function generateTotp() {
   try {
-    const response = await axios.post('/auth/otp/generate/');
+    const response = await axios.post("/auth/otp/generate/");
     const { secret, otpauth_url } = response.data;
     return { secret, otpauth_url };
   } catch (error) {
-    console.error('Error generating TOTP:', error);
+    console.error("Error generating TOTP:", error);
     throw error;
   }
 }
@@ -77,10 +153,10 @@ export async function generateTotp() {
 // Verify TOTP
 export async function verifyTotp(token) {
   try {
-    const response = await axios.post('/auth/otp/verify/', { token });
+    const response = await axios.post("/auth/otp/verify/", { token });
     return response.data;
   } catch (error) {
-    console.error('Error verifying TOTP:', error);
+    console.error("Error verifying TOTP:", error);
     throw error;
   }
 }
@@ -88,10 +164,10 @@ export async function verifyTotp(token) {
 // Check Status
 export async function checkStatus() {
   try {
-    const response = await axios.get('/auth/otp/status/');
+    const response = await axios.get("/auth/otp/status/");
     return response.data;
   } catch (error) {
-    console.error('Error checking status:', error);
+    console.error("Error checking status:", error);
     throw error;
   }
 }
@@ -99,10 +175,10 @@ export async function checkStatus() {
 // Validate TOTP
 export async function validateTotp(token) {
   try {
-    const response = await axios.post('/auth/otp/validate/', { token });
+    const response = await axios.post("/auth/otp/validate/", { token });
     return response.data;
   } catch (error) {
-    console.error('Error validating TOTP:', error);
+    console.error("Error validating TOTP:", error);
     throw error;
   }
 }
