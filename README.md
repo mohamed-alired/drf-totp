@@ -18,11 +18,11 @@ TOTP (Time-based One-Time Password) authentication for Django REST Framework.
          │                        │
          │                        │
          ▼                        ▼
-┌─────────────────┐      ┌──────────────────┐
-│  Enter 6-digit  │      │ Open Authenticator│
-│     Token       │      │   App (Google/   │
-└────────┬────────┘      │    Authy/etc)    │
-         │                └──────────────────┘
+┌─────────────────┐      ┌─────────────────────┐
+│  Enter 6-digit  │      │ Open Authenticator  │
+│     Token       │      │   App (Google/      │
+└────────┬────────┘      │    Authy/etc)       │
+         │               └─────────────────────┘
          ▼
 ┌─────────────────┐      ┌──────────────────────────┐
 │  POST /verify/  │─────▶│ DB: is_confirmed = True  │
