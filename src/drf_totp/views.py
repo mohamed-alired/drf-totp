@@ -1,156 +1,118 @@
-# author @djv-mo
-from rest_framework import status, views
-from rest_framework.response import Response
+from rest_framework import views
 from rest_framework.permissions import IsAuthenticated
-from .serializers import TOTPAuthSerializer, VerifyTOTPSerializer
-from .models import TOTPAuth
-from django.conf import settings
-import pyotp
+from rest_framework.response import Response
 
-TOTP_ISSUER_NAME = getattr(settings, "TOTP_ISSUER_NAME", "drftotp")
+from . import conf, services
+from .exceptions import TokenRequired, TOTPNotEnabled, TOTPNotFound
+from .models import TOTPAuth
+from .serializers import (
+    CodeSerializer,
+    DisableSerializer,
+    TOTPStatusSerializer,
+    TOTPTokenSerializer,
+    empty_status,
+)
+from .throttling import TOTPThrottle
+
+
+def _get_auth(user, not_found_detail=None):
+    auth = TOTPAuth.objects.filter(user=user).first()
+    if auth is None:
+        raise TOTPNotFound(not_found_detail) if not_found_detail else TOTPNotFound()
+    return auth
 
 
 class GenerateOTP(views.APIView):
+    """Generate (or regenerate) an unverified TOTP secret for the current user.
+
+    Returns the base32 secret and the ``otpauth://`` provisioning URI. This is
+    the only place the secret is ever returned. Fails once TOTP is verified;
+    call ``/disable/`` first to re-enroll.
     """
-    Generate a new TOTP secret for the authenticated user.
-    
-    If TOTP is already enabled and verified for the user, returns an error.
-    Otherwise, generates a new TOTP secret and provisioning URI.
-    """
+
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        auth, created = TOTPAuth.objects.get_or_create(user=request.user)
-
-        if auth.otp_verified:
-            return Response(
-                {"detail": "TOTP already enabled and verified."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        totp = pyotp.random_base32()
-        auth.otp_base32 = totp
-
-        provisioning_uri = pyotp.totp.TOTP(totp).provisioning_uri(
-            name=request.user.email, issuer_name=TOTP_ISSUER_NAME
-        )
-        auth.otp_auth_url = provisioning_uri
-        auth.save()
-
-        return Response({"secret": totp, "otpauth_url": provisioning_uri})
+        _, secret, uri = services.setup_totp(request.user)
+        return Response({"secret": secret, "otpauth_url": uri})
 
 
 class VerifyOTP(views.APIView):
-    """
-    Verify a TOTP token for the authenticated user.
-    
-    Requires a generated TOTP secret. If verification is successful,
-    enables TOTP authentication for the user.
-    """
+    """Confirm enrollment with the first code from the authenticator app."""
+
     permission_classes = [IsAuthenticated]
+    throttle_classes = [TOTPThrottle]
 
     def post(self, request):
-        serializer = VerifyTOTPSerializer(data=request.data)
+        serializer = TOTPTokenSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-
-        try:
-            auth = TOTPAuth.objects.get(user=request.user)
-
-            if not auth.otp_base32:
-                return Response(
-                    {"detail": "TOTP not generated. Please generate TOTP first."},
-                    status=status.HTTP_400_BAD_REQUEST,
-                )
-
-            totp = pyotp.TOTP(auth.otp_base32)
-
-            if totp.verify(serializer.validated_data["token"]):
-                auth.otp_verified = True
-                auth.otp_enabled = True
-                auth.save()
-                return Response({"detail": "TOTP verified successfully"})
-
-            return Response(
-                {"detail": "Invalid token"}, status=status.HTTP_400_BAD_REQUEST
-            )
-
-        except TOTPAuth.DoesNotExist:
-            return Response(
-                {"detail": "TOTP auth not found. Please generate TOTP first."},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        except Exception as e:
-            return Response(
-                {"detail": "An error occurred while verifying TOTP."},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            )
+        auth = _get_auth(request.user)
+        services.confirm_totp(auth, serializer.validated_data["token"], request)
+        return Response({"detail": "TOTP verified successfully"})
 
 
 class OTPStatus(views.APIView):
-    """
-    Get the current TOTP status for the authenticated user.
-    
-    Returns whether TOTP is enabled, verified, and associated metadata.
-    """
+    """Report TOTP state for the current user. Never includes the secret."""
+
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        auth, created = TOTPAuth.objects.get_or_create(user=request.user)
-        serializer = TOTPAuthSerializer(auth)
-        return Response(serializer.data)
+        auth = TOTPAuth.objects.filter(user=request.user).first()
+        if auth is None:
+            return Response(empty_status())
+        return Response(TOTPStatusSerializer(auth).data)
 
 
 class DisableOTP(views.APIView):
+    """Disable TOTP. Requires a valid TOTP or backup code once enrollment is complete.
+
+    Set ``TOTP_DISABLE_REQUIRES_PASSWORD = True`` to also require the password.
     """
-    Disable TOTP authentication for the authenticated user.
-    
-    Removes the TOTP secret and disables TOTP verification.
-    """
+
     permission_classes = [IsAuthenticated]
+    throttle_classes = [TOTPThrottle]
 
     def post(self, request):
-        try:
-            auth = TOTPAuth.objects.get(user=request.user)
-            auth.otp_enabled = False
-            auth.otp_verified = False
-            auth.otp_base32 = None
-            auth.otp_auth_url = None
-            auth.save()
-            return Response({"detail": "TOTP disabled successfully"})
-        except TOTPAuth.DoesNotExist:
-            return Response(
-                {"detail": "TOTP auth not found"}, status=status.HTTP_400_BAD_REQUEST
-            )
+        serializer = DisableSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        auth = _get_auth(request.user, "TOTP auth not found")
+        if auth.otp_verified:
+            token = serializer.validated_data.get("token", "")
+            if not token:
+                raise TokenRequired("A valid token is required to disable TOTP.")
+            services.validate_token(auth, token, request)
+        services.disable_totp(auth, request)
+        return Response({"detail": "TOTP disabled successfully"})
 
 
 class ValidateOTP(views.APIView):
-    """
-    Validate a TOTP token for the authenticated user.
-    
-    Used to verify a token without enabling/disabling TOTP.
-    Requires TOTP to be already enabled and verified.
-    """
+    """Validate a TOTP code (or a backup code) for an enrolled user."""
+
     permission_classes = [IsAuthenticated]
+    throttle_classes = [TOTPThrottle]
 
     def post(self, request):
-        serializer = VerifyTOTPSerializer(data=request.data)
+        serializer = CodeSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        auth = _get_auth(request.user, "TOTP auth not found")
+        method = services.validate_token(auth, serializer.validated_data["token"], request)
+        return Response({"detail": "Token is valid", "method": method})
 
-        try:
-            auth = TOTPAuth.objects.get(user=request.user)
-            if not auth.otp_enabled or not auth.otp_verified:
-                return Response(
-                    {"detail": "TOTP not enabled"}, status=status.HTTP_400_BAD_REQUEST
-                )
 
-            totp = pyotp.TOTP(auth.otp_base32)
-            if totp.verify(serializer.validated_data["token"]):
-                return Response({"detail": "Token is valid"})
+class BackupCodes(views.APIView):
+    """Issue a fresh set of backup codes. Requires a valid TOTP code (not a backup code)."""
 
-            return Response(
-                {"detail": "Invalid token"}, status=status.HTTP_400_BAD_REQUEST
-            )
-        except TOTPAuth.DoesNotExist:
-            return Response(
-                {"detail": "TOTP auth not found"}, status=status.HTTP_400_BAD_REQUEST
-            )
+    permission_classes = [IsAuthenticated]
+    throttle_classes = [TOTPThrottle]
+
+    def post(self, request):
+        if not conf.get_setting("TOTP_BACKUP_CODES_ENABLED"):
+            raise TOTPNotEnabled("Backup codes are disabled.")
+        serializer = TOTPTokenSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        auth = _get_auth(request.user, "TOTP auth not found")
+        services.validate_token(
+            auth, serializer.validated_data["token"], request, allow_backup=False
+        )
+        codes = services.generate_backup_codes(auth, request)
+        return Response({"backup_codes": codes})

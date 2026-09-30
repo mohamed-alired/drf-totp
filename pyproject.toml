@@ -1,30 +1,34 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
 name = "drf-totp"
-version = "0.1.5"
-description = "TOTP (Time-based One-Time Password) authentication for Django REST Framework"
+dynamic = ["version"]
+description = "TOTP (Time-based One-Time Password) second-factor authentication for Django REST Framework"
 readme = "README.md"
 authors = [
     { name = "djv-mo", email = "solutiond700@gmail.com" }
 ]
 license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.9"
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Environment :: Web Environment",
     "Framework :: Django",
     "Framework :: Django :: 4.2",
+    "Framework :: Django :: 5.1",
+    "Framework :: Django :: 5.2",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Internet :: WWW/HTTP",
     "Topic :: Security",
     "Topic :: Software Development :: Libraries :: Python Modules",
@@ -35,12 +39,71 @@ dependencies = [
     "djangorestframework>=3.14.0",
     "pyotp>=2.8.0",
 ]
-requires-python = ">=3.8"
+
+[project.optional-dependencies]
+encryption = ["cryptography>=41.0"]
+test = [
+    "pytest>=7",
+    "pytest-django>=4.5",
+    "pytest-cov",
+    "freezegun>=1.2",
+    "cryptography>=41.0",
+]
+dev = [
+    "drf-totp[test]",
+    "ruff",
+    "build",
+    "twine",
+]
 
 [project.urls]
 Homepage = "https://github.com/mohamed-alired/drf-totp"
 Repository = "https://github.com/mohamed-alired/drf-totp.git"
 Issues = "https://github.com/mohamed-alired/drf-totp/issues"
+Changelog = "https://github.com/mohamed-alired/drf-totp/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "src/drf_totp/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/drf_totp"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/drf_totp",
+    "tests",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "pyproject.toml",
+]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "tests.settings"
+pythonpath = ["src", "."]
+testpaths = ["tests"]
+addopts = "-ra"
+filterwarnings = ["error::DeprecationWarning:drf_totp"]
+
+[tool.coverage.run]
+source = ["drf_totp"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 90
+
+[tool.ruff]
+line-length = 100
+target-version = "py39"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "DJ", "SIM"]
+ignore = ["DJ001"]  # null=True on CharField is intentional (nullable secret)
+
+[tool.ruff.lint.per-file-ignores]
+"src/drf_totp/migrations/*" = ["E501", "I"]
+
+[tool.ruff.format]
+exclude = ["src/drf_totp/migrations/*"]

@@ -1,0 +1,58 @@
+import pytest
+from django.contrib.auth import get_user_model
+from django.urls import reverse
+from django.utils import timezone
+
+from drf_totp.models import TOTPAuth
+
+pytestmark = pytest.mark.django_db
+
+
+@pytest.fixture
+def admin_client(db):
+    from django.test import Client
+
+    admin = get_user_model().objects.create_superuser("root", "root@example.com", "pw")
+    c = Client()
+    c.force_login(admin)
+    return c
+
+
+class TestTOTPAuthAdmin:
+    def test_changelist(self, admin_client, enrolled):
+        resp = admin_client.get(reverse("admin:drf_totp_totpauth_changelist"))
+        assert resp.status_code == 200
+        assert b"alice" in resp.content
+        assert enrolled.otp_base32.encode() not in resp.content
+
+    def test_change_page_hides_secret(self, admin_client, enrolled):
+        resp = admin_client.get(reverse("admin:drf_totp_totpauth_change", args=[enrolled.pk]))
+        assert resp.status_code == 200
+        assert enrolled.otp_base32.encode() not in resp.content
+        assert b"otp_base32" not in resp.content
+
+    def test_no_add(self, admin_client):
+        resp = admin_client.get(reverse("admin:drf_totp_totpauth_add"))
+        assert resp.status_code == 403
+
+    def test_reset_action(self, admin_client, enrolled):
+        resp = admin_client.post(
+            reverse("admin:drf_totp_totpauth_changelist"),
+            {"action": "reset_totp", "_selected_action": [enrolled.pk]},
+            follow=True,
+        )
+        assert resp.status_code == 200
+        enrolled.refresh_from_db()
+        assert enrolled.otp_verified is False and enrolled.otp_base32 is None
+
+    def test_unlock_action(self, admin_client, enrolled):
+        enrolled.failed_attempts = 4
+        enrolled.locked_until = timezone.now() + timezone.timedelta(hours=1)
+        enrolled.save()
+        admin_client.post(
+            reverse("admin:drf_totp_totpauth_changelist"),
+            {"action": "unlock", "_selected_action": [enrolled.pk]},
+            follow=True,
+        )
+        auth = TOTPAuth.objects.get(pk=enrolled.pk)
+        assert auth.failed_attempts == 0 and auth.locked_until is None
