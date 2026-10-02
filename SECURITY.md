@@ -25,7 +25,10 @@ drf-totp implements the *second factor* only. What it guarantees:
 - Token endpoints are rate limited per user, with an optional hard lockout.
 - Disabling TOTP requires proving possession of the second factor (or a backup
   code), optionally plus the password.
-- Backup codes are stored only as salted hashes.
+- Backup codes are stored only as HMAC-SHA256 digests keyed with
+  `SECRET_KEY`; guessing them offline also requires the server key.
+- The session stamp used by `IsTOTPVerified` is bound to the user who earned it.
+- Failed-attempt counters persist under `ATOMIC_REQUESTS`.
 - Secrets can be encrypted at rest with `TOTP_ENCRYPTION_KEY`.
 
 What it does **not** do, and what your project must handle:

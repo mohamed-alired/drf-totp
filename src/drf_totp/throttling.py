@@ -14,11 +14,15 @@ class TOTPThrottle(SimpleRateThrottle):
 
     scope = "drf_totp"
 
-    def get_rate(self):
+    @classmethod
+    def configured_rate(cls):
         rates = api_settings.DEFAULT_THROTTLE_RATES or {}
-        if self.scope in rates:
-            return rates[self.scope]
+        if cls.scope in rates:
+            return rates[cls.scope]
         return conf.get_setting("TOTP_THROTTLE_RATE")
+
+    def get_rate(self):
+        return self.configured_rate()
 
     def get_cache_key(self, request, view):
         user = getattr(request, "user", None)

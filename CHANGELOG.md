@@ -26,6 +26,15 @@ Security-focused release. See "Upgrading to 0.2" in the README.
   `totp_reencrypt` management command.
 - The admin no longer displays or edits the secret; all fields are read-only
   and a "Reset TOTP" action replaces manual editing.
+- Backup codes are stored as HMAC-SHA256 keyed with `SECRET_KEY`, so a
+  database leak alone does not allow offline brute force. Keys listed in
+  `SECRET_KEY_FALLBACKS` are honoured; rotating `SECRET_KEY` without a fallback
+  invalidates existing backup codes.
+- The session stamp used by `IsTOTPVerified` records the user it was issued
+  for and is ignored for any other user (relevant when token auth and session
+  cookies are used together).
+- The drf-totp views are excluded from `ATOMIC_REQUESTS`, so failed-attempt
+  counters and lockouts persist even though the request ends in an error.
 
 ### Added
 - Backup (recovery) codes: `POST /otp/backup-codes/` issues a fresh set of
@@ -50,13 +59,21 @@ Security-focused release. See "Upgrading to 0.2" in the README.
 - All `TOTP_*` settings are read lazily, so `override_settings` works.
 - `/otp/status/` no longer creates a row as a side effect of a GET.
 - Internal errors are no longer swallowed into a generic 500.
+- `/otp/verify/` for a user who is already verified returns 400
+  (`TOTP already enabled and verified.`) instead of re-verifying.
+- Enrollment is decided by `otp_verified` alone.
 - Minimum Python is 3.9; Django 4.2, 5.1 and 5.2 are tested.
 
 ### Deprecated
 - `otp_enabled` duplicates `otp_verified` and will be removed in 0.3.
+- `drf_totp.serializers.TOTPAuthSerializer` and `VerifyTOTPSerializer` are
+  aliases of `TOTPStatusSerializer` and `TOTPTokenSerializer` that emit a
+  `DeprecationWarning`; they will be removed in 0.3.
 
 ### Removed
 - Column `otp_auth_url` (migration `0002_security_hardening`).
+- Module constant `drf_totp.views.TOTP_ISSUER_NAME`; read
+  `drf_totp.conf.get_setting("TOTP_ISSUER_NAME")` instead.
 
 ## [0.1.5] - 2024-10-23
 - Initial public releases (0.1.0 – 0.1.5).

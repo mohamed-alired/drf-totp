@@ -1,3 +1,4 @@
+from django.db import connections, transaction
 from rest_framework import views
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -18,11 +19,30 @@ from .throttling import TOTPThrottle
 def _get_auth(user, not_found_detail=None):
     auth = TOTPAuth.objects.filter(user=user).first()
     if auth is None:
-        raise TOTPNotFound(not_found_detail) if not_found_detail else TOTPNotFound()
+        raise TOTPNotFound(not_found_detail)
     return auth
 
 
-class GenerateOTP(views.APIView):
+class TOTPAPIView(views.APIView):
+    """Base view for drf-totp endpoints.
+
+    The views are excluded from ``ATOMIC_REQUESTS``. A rejected code is
+    reported by raising an exception, and under ``ATOMIC_REQUESTS`` DRF would
+    then roll back the whole request, erasing the failed-attempt counter and
+    lockout. The service layer opens its own transactions where it needs them.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    @classmethod
+    def as_view(cls, **initkwargs):
+        view = super().as_view(**initkwargs)
+        for alias in connections:
+            view = transaction.non_atomic_requests(using=alias)(view)
+        return view
+
+
+class GenerateOTP(TOTPAPIView):
     """Generate (or regenerate) an unverified TOTP secret for the current user.
 
     Returns the base32 secret and the ``otpauth://`` provisioning URI. This is
@@ -30,17 +50,14 @@ class GenerateOTP(views.APIView):
     call ``/disable/`` first to re-enroll.
     """
 
-    permission_classes = [IsAuthenticated]
-
     def post(self, request):
         _, secret, uri = services.setup_totp(request.user)
         return Response({"secret": secret, "otpauth_url": uri})
 
 
-class VerifyOTP(views.APIView):
+class VerifyOTP(TOTPAPIView):
     """Confirm enrollment with the first code from the authenticator app."""
 
-    permission_classes = [IsAuthenticated]
     throttle_classes = [TOTPThrottle]
 
     def post(self, request):
@@ -51,10 +68,8 @@ class VerifyOTP(views.APIView):
         return Response({"detail": "TOTP verified successfully"})
 
 
-class OTPStatus(views.APIView):
+class OTPStatus(TOTPAPIView):
     """Report TOTP state for the current user. Never includes the secret."""
-
-    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         auth = TOTPAuth.objects.filter(user=request.user).first()
@@ -63,13 +78,12 @@ class OTPStatus(views.APIView):
         return Response(TOTPStatusSerializer(auth).data)
 
 
-class DisableOTP(views.APIView):
+class DisableOTP(TOTPAPIView):
     """Disable TOTP. Requires a valid TOTP or backup code once enrollment is complete.
 
     Set ``TOTP_DISABLE_REQUIRES_PASSWORD = True`` to also require the password.
     """
 
-    permission_classes = [IsAuthenticated]
     throttle_classes = [TOTPThrottle]
 
     def post(self, request):
@@ -85,10 +99,9 @@ class DisableOTP(views.APIView):
         return Response({"detail": "TOTP disabled successfully"})
 
 
-class ValidateOTP(views.APIView):
+class ValidateOTP(TOTPAPIView):
     """Validate a TOTP code (or a backup code) for an enrolled user."""
 
-    permission_classes = [IsAuthenticated]
     throttle_classes = [TOTPThrottle]
 
     def post(self, request):
@@ -99,10 +112,9 @@ class ValidateOTP(views.APIView):
         return Response({"detail": "Token is valid", "method": method})
 
 
-class BackupCodes(views.APIView):
+class BackupCodes(TOTPAPIView):
     """Issue a fresh set of backup codes. Requires a valid TOTP code (not a backup code)."""
 
-    permission_classes = [IsAuthenticated]
     throttle_classes = [TOTPThrottle]
 
     def post(self, request):

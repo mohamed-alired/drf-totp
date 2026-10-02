@@ -1,8 +1,11 @@
 import logging
+from unittest import mock
 
 import pytest
+from django.db import DatabaseError, connection
+from rest_framework.test import APIClient
 
-from drf_totp import signals
+from drf_totp import services, signals
 from drf_totp.models import TOTPAuth
 
 pytestmark = pytest.mark.django_db
@@ -217,3 +220,72 @@ class TestLogging:
         assert any("validation failed" in r.getMessage() for r in caplog.records)
         assert enrolled.otp_base32 not in caplog.text
         assert "000000" not in caplog.text
+
+
+@pytest.fixture
+def atomic_requests():
+    connection.settings_dict["ATOMIC_REQUESTS"] = True
+    yield
+    connection.settings_dict["ATOMIC_REQUESTS"] = False
+
+
+@pytest.mark.django_db(transaction=True)
+class TestAtomicRequests:
+    """Regression: under ATOMIC_REQUESTS the failure counter must survive the 400 response."""
+
+    def _client(self, django_user_model):
+        user = django_user_model.objects.create_user("carol", "c@example.com", "pw")
+        services.setup_totp(user)
+        TOTPAuth.objects.filter(user=user).update(otp_verified=True, otp_enabled=True)
+        c = APIClient()
+        c.force_authenticate(user=user)
+        return user, c
+
+    def test_lockout_persists(self, atomic_requests, settings, django_user_model, urls):
+        settings.TOTP_MAX_FAILED_ATTEMPTS = 3
+        settings.TOTP_THROTTLE_RATE = None
+        user, c = self._client(django_user_model)
+        for _ in range(3):
+            assert c.post(urls.validate, {"token": "000000"}).status_code == 400
+        auth = TOTPAuth.objects.get(user=user)
+        assert auth.locked_until is not None
+        assert c.post(urls.validate, {"token": "000000"}).status_code == 429
+
+    def test_failure_counter_persists(self, atomic_requests, settings, django_user_model, urls):
+        settings.TOTP_THROTTLE_RATE = None
+        user, c = self._client(django_user_model)
+        c.post(urls.validate, {"token": "000000"})
+        c.post(urls.validate, {"token": "AAAAA-AAAAA"})
+        assert TOTPAuth.objects.get(user=user).failed_attempts == 2
+
+    def test_views_opt_out_of_atomic_requests(self):
+        from django.urls import resolve
+
+        for name in ("generate", "verify", "status", "disable", "validate", "backup-codes"):
+            func = resolve(f"/auth/otp/{name}/").func
+            assert "default" in getattr(func, "_non_atomic_requests", set()), name
+
+
+class TestEnabledFlagDesync:
+    """Regression: only otp_verified decides enrollment; otp_enabled is a deprecated mirror."""
+
+    def test_validate_and_disable_work_when_flags_disagree(self, client, enrolled, urls, code):
+        TOTPAuth.objects.filter(pk=enrolled.pk).update(otp_enabled=False)
+        assert client.post(urls.validate, {"token": code(enrolled)}).status_code == 200
+        assert client.post(urls.disable, {"token": code(enrolled, 1)}).status_code == 200
+
+
+class TestDisableIsAtomic:
+    """Regression: a failure while deleting backup codes must leave TOTP enabled."""
+
+    def test_rollback_on_backup_code_delete_failure(self, enrolled):
+        services.generate_backup_codes(enrolled)
+        with (
+            mock.patch("django.db.models.query.QuerySet.delete", side_effect=DatabaseError("boom")),
+            pytest.raises(DatabaseError),
+        ):
+            services.disable_totp(enrolled)
+        fresh = TOTPAuth.objects.get(pk=enrolled.pk)
+        assert fresh.otp_verified is True
+        assert fresh.otp_base32
+        assert fresh.backup_codes.count() == 10

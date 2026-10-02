@@ -287,3 +287,38 @@ class TestCustomDigits:
         assert len(token) == 8
         assert client.post(urls.verify, {"token": "123456"}).status_code == 400
         assert client.post(urls.verify, {"token": token}).status_code == 200
+
+
+class TestBackupCodeStorage:
+    """Backup codes are stored as HMAC-SHA256 keyed with SECRET_KEY."""
+
+    def test_stored_hash_is_keyed(self, client, enrolled, urls, code, settings):
+        import hashlib
+
+        codes = client.post(urls.backup, {"token": code(enrolled)}).data["backup_codes"]
+        plain = codes[0].replace("-", "")
+        stored = set(TOTPBackupCode.objects.values_list("code_hash", flat=True))
+        assert all(h.startswith("hmac_sha256$") for h in stored)
+        assert f"hmac_sha256${hashlib.sha256(plain.encode()).hexdigest()}" not in stored
+
+    def test_secret_key_rotation_with_fallback(self, client, enrolled, urls, code, settings):
+        codes = client.post(urls.backup, {"token": code(enrolled)}).data["backup_codes"]
+        old_key = settings.SECRET_KEY
+        settings.SECRET_KEY = "a-brand-new-secret-key"
+        assert client.post(urls.validate, {"token": codes[0]}).status_code == 400
+        settings.SECRET_KEY_FALLBACKS = [old_key]
+        assert client.post(urls.validate, {"token": codes[0]}).status_code == 200
+
+
+class TestDeprecatedSerializerNames:
+    def test_old_names_still_import_with_warning(self):
+        from drf_totp import serializers
+
+        with pytest.warns(DeprecationWarning, match="TOTPStatusSerializer"):
+            from drf_totp.serializers import TOTPAuthSerializer
+        assert TOTPAuthSerializer is serializers.TOTPStatusSerializer
+        with pytest.warns(DeprecationWarning, match="TOTPTokenSerializer"):
+            from drf_totp.serializers import VerifyTOTPSerializer
+        assert VerifyTOTPSerializer is serializers.TOTPTokenSerializer
+        with pytest.raises(ImportError):
+            from drf_totp.serializers import NoSuchSerializer  # noqa: F401

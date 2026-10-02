@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import logging
 import re
 import secrets
@@ -11,8 +9,10 @@ import time
 from datetime import timedelta
 
 import pyotp
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
+from django.utils.crypto import salted_hmac
 from django.utils.module_loading import import_string
 from pyotp.utils import strings_equal
 
@@ -28,13 +28,17 @@ from .models import TOTPAuth, TOTPBackupCode
 
 logger = logging.getLogger("drf_totp")
 
-#: Session key holding the UNIX timestamp of the last successful validation.
+#: Session key holding ``{"user": <pk>, "at": <unix time>}`` for the last successful validation.
 SESSION_KEY = "drf_totp_verified_at"
 
 # Backup codes use an unambiguous alphabet (no 0/O, 1/I).
 BACKUP_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 BACKUP_CODE_LENGTH = 10
 _BACKUP_CODE_RE = re.compile(r"^[A-Z2-9]{10}$")
+# Backup codes are stored as HMAC-SHA256 keyed with SECRET_KEY, so a database
+# leak alone is not enough to brute-force them offline.
+_BACKUP_HASH_PREFIX = "hmac_sha256$"
+_BACKUP_HMAC_SALT = "drf_totp.backup_code"
 
 
 # --------------------------------------------------------------------------- #
@@ -198,44 +202,52 @@ def confirm_totp(auth: TOTPAuth, token: str, request=None) -> None:
     auth.save(update_fields=["otp_verified", "otp_enabled", "updated_at"])
     logger.info("TOTP enabled for user id=%s", auth.user_id)
     signals.totp_enabled.send(sender=TOTPAuth, user=auth.user, request=request)
-    mark_session_verified(request)
+    mark_session_verified(request, auth.user_id)
 
 
 def validate_token(auth: TOTPAuth, token: str, request=None, allow_backup: bool = True) -> str:
     """Validate a TOTP code or, when allowed, a backup code.
 
     Returns ``"totp"`` or ``"backup_code"``. Raises ``TOTPNotEnabled`` when the
-    user has not completed enrollment and ``InvalidToken`` on rejection.
+    user has not completed enrollment and ``InvalidToken`` on rejection. Only
+    ``otp_verified`` is consulted; ``otp_enabled`` is a deprecated mirror.
     """
-    if not auth.otp_verified or not auth.otp_enabled:
+    if not auth.otp_verified:
         raise TOTPNotEnabled()
     token = (token or "").strip()
     if is_totp_format(token):
         if verify_totp_token(auth, token, request):
-            mark_session_verified(request)
+            mark_session_verified(request, auth.user_id)
             return "totp"
         raise InvalidToken()
     backup_allowed = allow_backup and conf.get_setting("TOTP_BACKUP_CODES_ENABLED")
     if backup_allowed and use_backup_code(auth, token, request):
-        mark_session_verified(request)
+        mark_session_verified(request, auth.user_id)
         return "backup_code"
     raise InvalidToken()
 
 
 def disable_totp(auth: TOTPAuth, request=None) -> None:
-    """Remove the secret and every backup code; TOTP is no longer required."""
-    auth.otp_enabled = False
-    auth.otp_verified = False
-    auth.otp_base32 = None
-    auth.last_used_step = None
-    auth.last_used_at = None
-    auth.failed_attempts = 0
-    auth.locked_until = None
-    auth.save()
-    auth.backup_codes.all().delete()
+    """Remove the secret and every backup code; TOTP is no longer required.
+
+    ``request`` is the request performing the change (the user themselves, or a
+    staff member in the admin). The session stamp is cleared only when that
+    request belongs to the user being disabled.
+    """
+    with transaction.atomic():
+        auth.otp_enabled = False
+        auth.otp_verified = False
+        auth.otp_base32 = None
+        auth.last_used_step = None
+        auth.last_used_at = None
+        auth.failed_attempts = 0
+        auth.locked_until = None
+        auth.save()
+        auth.backup_codes.all().delete()
     logger.info("TOTP disabled for user id=%s", auth.user_id)
     signals.totp_disabled.send(sender=TOTPAuth, user=auth.user, request=request)
-    clear_session_verified(request)
+    if _request_user_id(request) == auth.user_id:
+        clear_session_verified(request)
 
 
 # --------------------------------------------------------------------------- #
@@ -250,18 +262,19 @@ def format_backup_code(code: str) -> str:
     return f"{code[:half]}-{code[half:]}"
 
 
-def _hash_backup_code(code: str, salt: str) -> str:
-    return hashlib.sha256(f"{salt}:{code}".encode()).hexdigest()
+def _backup_code_digest(code: str, secret) -> str:
+    digest = salted_hmac(_BACKUP_HMAC_SALT, code, secret=secret, algorithm="sha256").hexdigest()
+    return _BACKUP_HASH_PREFIX + digest
 
 
 def _make_code_hash(code: str) -> str:
-    salt = secrets.token_hex(8)
-    return f"{salt}${_hash_backup_code(code, salt)}"
+    return _backup_code_digest(code, settings.SECRET_KEY)
 
 
-def _check_code_hash(code: str, stored: str) -> bool:
-    salt, _, digest = stored.partition("$")
-    return hmac.compare_digest(_hash_backup_code(code, salt), digest)
+def _candidate_code_hashes(code: str) -> list[str]:
+    """Digests of ``code`` under SECRET_KEY and every SECRET_KEY_FALLBACKS entry."""
+    keys = [settings.SECRET_KEY, *getattr(settings, "SECRET_KEY_FALLBACKS", [])]
+    return [_backup_code_digest(code, key) for key in keys]
 
 
 def generate_backup_codes(auth: TOTPAuth, request=None) -> list[str]:
@@ -292,13 +305,17 @@ def use_backup_code(auth: TOTPAuth, code: str, request=None) -> bool:
         locked = TOTPAuth.objects.select_for_update().get(pk=auth.pk)
         now = timezone.now()
         _check_lock(locked, now)
-        for backup in locked.backup_codes.select_for_update().filter(used_at__isnull=True):
-            if _check_code_hash(code, backup.code_hash):
-                backup.used_at = now
-                backup.save(update_fields=["used_at"])
-                _record_success(locked, now, "backup_code", request)
-                _copy_state(locked, auth)
-                return True
+        backup = (
+            locked.backup_codes.select_for_update()
+            .filter(used_at__isnull=True, code_hash__in=_candidate_code_hashes(code))
+            .first()
+        )
+        if backup is not None:
+            backup.used_at = now
+            backup.save(update_fields=["used_at"])
+            _record_success(locked, now, "backup_code", request)
+            _copy_state(locked, auth)
+            return True
         _record_failure(locked, now, "backup_code", request)
         _copy_state(locked, auth)
         return False
@@ -311,10 +328,18 @@ def _session(request):
     return getattr(request, "session", None) if request is not None else None
 
 
-def mark_session_verified(request) -> None:
+def _request_user_id(request):
+    user = getattr(request, "user", None) if request is not None else None
+    if user is None or not getattr(user, "is_authenticated", False):
+        return None
+    return user.pk
+
+
+def mark_session_verified(request, user_id) -> None:
+    """Record in the session that ``user_id`` passed the second factor just now."""
     session = _session(request)
     if session is not None:
-        session[SESSION_KEY] = int(time.time())
+        session[SESSION_KEY] = {"user": str(user_id), "at": int(time.time())}
 
 
 def clear_session_verified(request) -> None:
@@ -324,18 +349,23 @@ def clear_session_verified(request) -> None:
 
 
 def is_session_verified(request) -> bool:
-    """True when the current session validated a second factor recently enough."""
+    """True when this session validated a second factor for the requesting user recently enough.
+
+    The stamp is bound to the user it was issued for, so it is ignored when the
+    request authenticates as somebody else (e.g. token auth alongside a cookie).
+    """
     check = conf.get_setting("TOTP_VERIFIED_CHECK")
     if check:
         if isinstance(check, str):
             check = import_string(check)
         return bool(check(request))
     session = _session(request)
-    if session is None:
+    user_id = _request_user_id(request)
+    if session is None or user_id is None:
         return False
     stamp = session.get(SESSION_KEY)
-    if not stamp:
+    if not isinstance(stamp, dict) or stamp.get("user") != str(user_id):
         return False
     max_age = conf.get_setting("TOTP_SESSION_MAX_AGE")
-    expired = bool(max_age) and time.time() - stamp > max_age
+    expired = bool(max_age) and time.time() - stamp.get("at", 0) > max_age
     return not expired

@@ -118,3 +118,38 @@ class TestChecks:
     def test_bad_digits(self, settings):
         settings.TOTP_DIGITS = 4
         assert "drf_totp.E004" in self.run()
+
+
+class TestFernetCache:
+    def test_reused_until_key_changes(self, settings):
+        settings.TOTP_ENCRYPTION_KEY = KEY1
+        first = crypto.get_fernet()
+        assert crypto.get_fernet() is first
+        settings.TOTP_ENCRYPTION_KEY = [KEY2, KEY1]
+        rotated = crypto.get_fernet()
+        assert rotated is not first
+        assert crypto.decrypt(crypto.encrypt("abc")) == "abc"
+
+    def test_errors_are_typed_and_not_cached(self, settings):
+        settings.TOTP_ENCRYPTION_KEY = "not-a-key"
+        with pytest.raises(crypto.InvalidEncryptionKey):
+            crypto.get_fernet()
+        with pytest.raises(crypto.InvalidEncryptionKey):
+            crypto.get_fernet()
+
+
+class TestMissingCryptography:
+    def test_check_reports_missing_library(self, settings, monkeypatch):
+        import sys
+
+        from django.core.checks import run_checks
+
+        crypto._build_fernet.cache_clear()
+        monkeypatch.setitem(sys.modules, "cryptography.fernet", None)
+        settings.TOTP_ENCRYPTION_KEY = KEY1
+        try:
+            assert "drf_totp.E001" in [c.id for c in run_checks()]
+            with pytest.raises(crypto.CryptographyMissing):
+                crypto.get_fernet()
+        finally:
+            crypto._build_fernet.cache_clear()

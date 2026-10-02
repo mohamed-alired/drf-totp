@@ -156,6 +156,7 @@ class SensitiveView(APIView):
     permission_classes = [IsAuthenticated, IsTOTPVerified]
 ```
 
+The stamp records which user earned it and is ignored for any other user.
 Set `TOTP_SESSION_MAX_AGE` (seconds) to require re-validation periodically.
 Disabling TOTP clears the stamp. Use `IsTOTPEnrolled` to require that a user
 has enabled TOTP at all.
@@ -203,6 +204,14 @@ def is_second_factor_verified(request) -> bool:
 
 Settings are read at request time, so they can be changed in tests with
 `override_settings`.
+
+Backup codes are stored as HMAC-SHA256 digests keyed with `SECRET_KEY`. When
+you rotate `SECRET_KEY`, keep the old value in `SECRET_KEY_FALLBACKS` until
+users have regenerated their codes, or the old codes stop working.
+
+The drf-totp views opt out of `ATOMIC_REQUESTS`. A rejected code ends the
+request with an error, and under `ATOMIC_REQUESTS` that would roll back the
+failed-attempt counter and lockout.
 
 Throttling uses Django's cache framework. The default local-memory cache works
 for a single process; use a shared cache (Redis, Memcached) behind multiple
@@ -278,6 +287,9 @@ Run `python manage.py migrate`. Then review these behavior changes:
 - Token endpoints are rate limited (`5/min` per user by default).
 - One step of clock drift is now tolerated.
 - The `otp_auth_url` column is dropped by migration `0002_security_hardening`.
+- `/verify/` returns 400 for a user who is already verified.
+- `TOTPAuthSerializer` and `VerifyTOTPSerializer` still import but warn; switch
+  to `TOTPStatusSerializer` and `TOTPTokenSerializer`.
 
 See [CHANGELOG.md](CHANGELOG.md) for the complete list.
 

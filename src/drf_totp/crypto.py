@@ -6,11 +6,21 @@ Values without the prefix are treated as plaintext so an existing deployment
 can turn encryption on and re-encrypt with ``manage.py totp_reencrypt``.
 """
 
+import functools
+
 from django.core.exceptions import ImproperlyConfigured
 
 from . import conf
 
 PREFIX = "fernet$"
+
+
+class CryptographyMissing(ImproperlyConfigured):
+    """``TOTP_ENCRYPTION_KEY`` is set but the ``cryptography`` package is not installed."""
+
+
+class InvalidEncryptionKey(ImproperlyConfigured):
+    """``TOTP_ENCRYPTION_KEY`` contains a value that is not a valid Fernet key."""
 
 
 def _keys():
@@ -27,17 +37,23 @@ def get_fernet():
     keys = _keys()
     if keys is None:
         return None
+    return _build_fernet(tuple(keys))
+
+
+@functools.lru_cache(maxsize=8)
+def _build_fernet(keys):
+    # Cached per key tuple: rebuilt only when the setting changes.
     try:
         from cryptography.fernet import Fernet, MultiFernet
-    except ImportError as exc:  # pragma: no cover - exercised via system check
-        raise ImproperlyConfigured(
+    except ImportError as exc:
+        raise CryptographyMissing(
             "TOTP_ENCRYPTION_KEY is set but 'cryptography' is not installed. "
             "Install it with: pip install 'drf-totp[encryption]'"
         ) from exc
     try:
         return MultiFernet([Fernet(k) for k in keys])
     except (ValueError, TypeError) as exc:
-        raise ImproperlyConfigured(
+        raise InvalidEncryptionKey(
             "TOTP_ENCRYPTION_KEY must be a 32-byte url-safe base64 Fernet key. "
             "Generate one with: python -c 'from cryptography.fernet import Fernet; "
             "print(Fernet.generate_key().decode())'"

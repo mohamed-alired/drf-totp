@@ -1,3 +1,5 @@
+import warnings
+
 from rest_framework import serializers
 
 from . import conf
@@ -63,3 +65,23 @@ class DisableSerializer(serializers.Serializer):
             if not password or not user.check_password(password):
                 raise serializers.ValidationError({"password": "Invalid password."})
         return attrs
+
+
+# Names from 0.1.x, kept importable until 0.3.
+_DEPRECATED_ALIASES = {
+    "TOTPAuthSerializer": "TOTPStatusSerializer",
+    "VerifyTOTPSerializer": "TOTPTokenSerializer",
+}
+
+
+def __getattr__(name):
+    if name in _DEPRECATED_ALIASES:
+        new = _DEPRECATED_ALIASES[name]
+        warnings.warn(
+            f"drf_totp.serializers.{name} is deprecated and will be removed in 0.3; "
+            f"use {new} instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return globals()[new]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
