@@ -102,6 +102,13 @@ class TestChecks:
         settings.TOTP_ENCRYPTION_KEY = "bad"
         assert "drf_totp.E002" in self.run()
 
+    @pytest.mark.parametrize("value", [12345, [KEY1, 7], {"k": KEY1}, object()])
+    def test_wrong_type_is_reported_not_raised(self, settings, value):
+        settings.TOTP_ENCRYPTION_KEY = value
+        assert "drf_totp.E002" in self.run()
+        with pytest.raises(crypto.InvalidEncryptionKey):
+            crypto.get_fernet()
+
     def test_good_key(self, settings):
         settings.TOTP_ENCRYPTION_KEY = [KEY1, KEY2]
         assert self.run() == []

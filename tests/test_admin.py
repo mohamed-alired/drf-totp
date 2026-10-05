@@ -32,6 +32,31 @@ class TestTOTPAuthAdmin:
         assert enrolled.otp_base32.encode() not in resp.content
         assert b"otp_base32" not in resp.content
 
+    def test_no_delete(self, admin_client, enrolled):
+        resp = admin_client.get(reverse("admin:drf_totp_totpauth_delete", args=[enrolled.pk]))
+        assert resp.status_code == 403
+        resp = admin_client.post(
+            reverse("admin:drf_totp_totpauth_changelist"),
+            {"action": "delete_selected", "_selected_action": [enrolled.pk]},
+        )
+        assert TOTPAuth.objects.filter(pk=enrolled.pk).exists()
+        changelist = admin_client.get(reverse("admin:drf_totp_totpauth_changelist"))
+        assert b'value="delete_selected"' not in changelist.content
+
+    def test_changelist_query_count_is_flat(self, admin_client, enrolled):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        url = reverse("admin:drf_totp_totpauth_changelist")
+        with CaptureQueriesContext(connection) as one:
+            admin_client.get(url)
+        for i in range(5):
+            u = get_user_model().objects.create_user(f"u{i}", f"u{i}@example.com", "pw")
+            TOTPAuth.objects.create(user=u, otp_base32="JBSWY3DPEHPK3PXP", otp_verified=True)
+        with CaptureQueriesContext(connection) as six:
+            admin_client.get(url)
+        assert len(six) == len(one)
+
     def test_no_add(self, admin_client):
         resp = admin_client.get(reverse("admin:drf_totp_totpauth_add"))
         assert resp.status_code == 403

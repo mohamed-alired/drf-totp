@@ -27,7 +27,8 @@ drf-totp implements the *second factor* only. What it guarantees:
   code), optionally plus the password.
 - Backup codes are stored only as HMAC-SHA256 digests keyed with
   `SECRET_KEY`; guessing them offline also requires the server key.
-- The session stamp used by `IsTOTPVerified` is bound to the user who earned it.
+- The session stamp used by `IsTOTPVerified` is bound to the user who earned
+  it and to the enrollment (secret) it was earned with.
 - Failed-attempt counters persist under `ATOMIC_REQUESTS`.
 - Secrets can be encrypted at rest with `TOTP_ENCRYPTION_KEY`.
 

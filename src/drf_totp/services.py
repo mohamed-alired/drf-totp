@@ -28,8 +28,11 @@ from .models import TOTPAuth, TOTPBackupCode
 
 logger = logging.getLogger("drf_totp")
 
-#: Session key holding ``{"user": <pk>, "at": <unix time>}`` for the last successful validation.
+#: Session key holding ``{"user": <pk>, "enrollment": <fingerprint>, "at": <unix time>}``
+#: for the last successful validation. The fingerprint ties the stamp to the
+#: secret it was earned with, so it dies with a reset or re-enrollment.
 SESSION_KEY = "drf_totp_verified_at"
+_STAMP_HMAC_SALT = "drf_totp.session_stamp"
 
 # Backup codes use an unambiguous alphabet (no 0/O, 1/I).
 BACKUP_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -55,6 +58,8 @@ def get_account_label(user) -> str:
         value = import_string(label_setting)(user)
     else:
         value = getattr(user, label_setting)
+        if callable(value):  # e.g. "get_full_name"
+            value = value()
     return str(value or user.get_username())
 
 
@@ -101,10 +106,15 @@ def setup_totp(user):
     return auth, secret, get_provisioning_uri(secret, user)
 
 
-def user_has_totp(user) -> bool:
+def get_verified_auth(user):
+    """Return the user's confirmed ``TOTPAuth`` row, or ``None``."""
     if not getattr(user, "is_authenticated", False) or getattr(user, "pk", None) is None:
-        return False
-    return TOTPAuth.objects.filter(user=user, otp_verified=True).exists()
+        return None
+    return TOTPAuth.objects.filter(user=user, otp_verified=True).first()
+
+
+def user_has_totp(user) -> bool:
+    return get_verified_auth(user) is not None
 
 
 # --------------------------------------------------------------------------- #
@@ -116,7 +126,8 @@ def _check_lock(auth: TOTPAuth, now):
         raise TOTPLocked()
 
 
-def _record_failure(auth: TOTPAuth, now, method: str, request=None):
+def _record_failure(auth: TOTPAuth, now):
+    """Count a wrong code and, when configured, start a lockout. Persists only."""
     auth.failed_attempts += 1
     max_failures = conf.get_setting("TOTP_MAX_FAILED_ATTEMPTS")
     update_fields = ["failed_attempts", "updated_at"]
@@ -126,13 +137,9 @@ def _record_failure(auth: TOTPAuth, now, method: str, request=None):
         update_fields.append("locked_until")
         logger.warning("TOTP lockout for user id=%s until %s", auth.user_id, auth.locked_until)
     auth.save(update_fields=update_fields)
-    logger.warning("TOTP %s validation failed for user id=%s", method, auth.user_id)
-    signals.totp_validation_failed.send(
-        sender=TOTPAuth, user=auth.user, request=request, method=method
-    )
 
 
-def _record_success(auth: TOTPAuth, now, method: str, request=None, step=None):
+def _record_success(auth: TOTPAuth, now, step=None):
     auth.failed_attempts = 0
     auth.locked_until = None
     auth.last_used_at = now
@@ -141,8 +148,23 @@ def _record_success(auth: TOTPAuth, now, method: str, request=None, step=None):
         auth.last_used_step = step
         update_fields.append("last_used_step")
     auth.save(update_fields=update_fields)
-    logger.info("TOTP %s validated for user id=%s", method, auth.user_id)
-    signals.totp_validated.send(sender=TOTPAuth, user=auth.user, request=request, method=method)
+
+
+def _emit(accepted: bool, auth: TOTPAuth, method: str, request=None):
+    """Log and signal the outcome. Called after the row lock has been released."""
+    if accepted:
+        logger.info("TOTP %s validated for user id=%s", method, auth.user_id)
+        signals.totp_validated.send(sender=TOTPAuth, user=auth.user, request=request, method=method)
+    else:
+        logger.warning("TOTP %s validation failed for user id=%s", method, auth.user_id)
+        signals.totp_validation_failed.send(
+            sender=TOTPAuth, user=auth.user, request=request, method=method
+        )
+
+
+def _lock(auth: TOTPAuth) -> TOTPAuth:
+    """Re-read ``auth`` under ``SELECT ... FOR UPDATE`` with its user preloaded."""
+    return TOTPAuth.objects.select_for_update().select_related("user").get(pk=auth.pk)
 
 
 def _matching_step(totp: pyotp.TOTP, token: str, now):
@@ -169,7 +191,7 @@ def verify_totp_token(auth: TOTPAuth, token: str, request=None) -> bool:
     ``TOTPNotGenerated`` when no secret exists.
     """
     with transaction.atomic():
-        locked = TOTPAuth.objects.select_for_update().get(pk=auth.pk)
+        locked = _lock(auth)
         now = timezone.now()
         _check_lock(locked, now)
         if not locked.otp_base32:
@@ -178,15 +200,18 @@ def verify_totp_token(auth: TOTPAuth, token: str, request=None) -> bool:
         replayed = (
             step is not None and locked.last_used_step is not None and step <= locked.last_used_step
         )
-        if step is None or replayed:
-            if replayed:
-                logger.warning("TOTP replay rejected for user id=%s", auth.user_id)
-            _record_failure(locked, now, "totp", request)
-            _copy_state(locked, auth)
-            return False
-        _record_success(locked, now, "totp", request, step=step)
+        accepted = step is not None and not replayed
+        if accepted:
+            _record_success(locked, now, step=step)
+        elif replayed:
+            # A replay proves possession of the secret (a double-submit or a
+            # client retry), so it is rejected but not counted towards a lockout.
+            logger.warning("TOTP replay rejected for user id=%s", auth.user_id)
+        else:
+            _record_failure(locked, now)
         _copy_state(locked, auth)
-        return True
+    _emit(accepted, locked, "totp", request)
+    return accepted
 
 
 def confirm_totp(auth: TOTPAuth, token: str, request=None) -> None:
@@ -202,7 +227,7 @@ def confirm_totp(auth: TOTPAuth, token: str, request=None) -> None:
     auth.save(update_fields=["otp_verified", "otp_enabled", "updated_at"])
     logger.info("TOTP enabled for user id=%s", auth.user_id)
     signals.totp_enabled.send(sender=TOTPAuth, user=auth.user, request=request)
-    mark_session_verified(request, auth.user_id)
+    mark_session_verified(request, auth)
 
 
 def validate_token(auth: TOTPAuth, token: str, request=None, allow_backup: bool = True) -> str:
@@ -217,12 +242,12 @@ def validate_token(auth: TOTPAuth, token: str, request=None, allow_backup: bool 
     token = (token or "").strip()
     if is_totp_format(token):
         if verify_totp_token(auth, token, request):
-            mark_session_verified(request, auth.user_id)
+            mark_session_verified(request, auth)
             return "totp"
         raise InvalidToken()
     backup_allowed = allow_backup and conf.get_setting("TOTP_BACKUP_CODES_ENABLED")
     if backup_allowed and use_backup_code(auth, token, request):
-        mark_session_verified(request, auth.user_id)
+        mark_session_verified(request, auth)
         return "backup_code"
     raise InvalidToken()
 
@@ -285,9 +310,10 @@ def generate_backup_codes(auth: TOTPAuth, request=None) -> list[str]:
         for _ in range(count)
     ]
     with transaction.atomic():
-        auth.backup_codes.all().delete()
+        locked = _lock(auth)  # serialise with concurrent issue/consume requests
+        locked.backup_codes.all().delete()
         TOTPBackupCode.objects.bulk_create(
-            [TOTPBackupCode(auth=auth, code_hash=_make_code_hash(c)) for c in codes]
+            [TOTPBackupCode(auth=locked, code_hash=_make_code_hash(c)) for c in codes]
         )
     logger.info("Backup codes generated for user id=%s (count=%s)", auth.user_id, count)
     signals.backup_codes_generated.send(
@@ -302,7 +328,7 @@ def use_backup_code(auth: TOTPAuth, code: str, request=None) -> bool:
     if not _BACKUP_CODE_RE.match(code):
         return False
     with transaction.atomic():
-        locked = TOTPAuth.objects.select_for_update().get(pk=auth.pk)
+        locked = _lock(auth)
         now = timezone.now()
         _check_lock(locked, now)
         backup = (
@@ -310,15 +336,16 @@ def use_backup_code(auth: TOTPAuth, code: str, request=None) -> bool:
             .filter(used_at__isnull=True, code_hash__in=_candidate_code_hashes(code))
             .first()
         )
-        if backup is not None:
+        accepted = backup is not None
+        if accepted:
             backup.used_at = now
             backup.save(update_fields=["used_at"])
-            _record_success(locked, now, "backup_code", request)
-            _copy_state(locked, auth)
-            return True
-        _record_failure(locked, now, "backup_code", request)
+            _record_success(locked, now)
+        else:
+            _record_failure(locked, now)
         _copy_state(locked, auth)
-        return False
+    _emit(accepted, locked, "backup_code", request)
+    return accepted
 
 
 # --------------------------------------------------------------------------- #
@@ -335,11 +362,22 @@ def _request_user_id(request):
     return user.pk
 
 
-def mark_session_verified(request, user_id) -> None:
-    """Record in the session that ``user_id`` passed the second factor just now."""
+def enrollment_fingerprint(auth: TOTPAuth):
+    """A short keyed digest of the current secret; changes on reset or re-enrollment."""
+    if not auth.otp_base32:
+        return None
+    return salted_hmac(_STAMP_HMAC_SALT, auth.otp_base32, algorithm="sha256").hexdigest()[:16]
+
+
+def mark_session_verified(request, auth: TOTPAuth) -> None:
+    """Record in the session that ``auth``'s user passed the second factor just now."""
     session = _session(request)
     if session is not None:
-        session[SESSION_KEY] = {"user": str(user_id), "at": int(time.time())}
+        session[SESSION_KEY] = {
+            "user": str(auth.user_id),
+            "enrollment": enrollment_fingerprint(auth),
+            "at": int(time.time()),
+        }
 
 
 def clear_session_verified(request) -> None:
@@ -348,11 +386,12 @@ def clear_session_verified(request) -> None:
         session.pop(SESSION_KEY, None)
 
 
-def is_session_verified(request) -> bool:
-    """True when this session validated a second factor for the requesting user recently enough.
+def is_session_verified(request, auth: TOTPAuth | None = None) -> bool:
+    """True when this session validated the requesting user's *current* enrollment recently enough.
 
-    The stamp is bound to the user it was issued for, so it is ignored when the
-    request authenticates as somebody else (e.g. token auth alongside a cookie).
+    The stamp is bound to the user and to the secret it was earned with, so it
+    is ignored for another user (token auth alongside a cookie) and after a
+    reset or re-enrollment. ``auth`` may be passed to avoid a second lookup.
     """
     check = conf.get_setting("TOTP_VERIFIED_CHECK")
     if check:
@@ -365,6 +404,10 @@ def is_session_verified(request) -> bool:
         return False
     stamp = session.get(SESSION_KEY)
     if not isinstance(stamp, dict) or stamp.get("user") != str(user_id):
+        return False
+    if auth is None:
+        auth = TOTPAuth.objects.filter(user_id=user_id).first()
+    if auth is None or stamp.get("enrollment") != enrollment_fingerprint(auth):
         return False
     max_age = conf.get_setting("TOTP_SESSION_MAX_AGE")
     expired = bool(max_age) and time.time() - stamp.get("at", 0) > max_age

@@ -48,6 +48,11 @@ class TOTPAuthAdmin(admin.ModelAdmin):
     def has_add_permission(self, request):
         return False
 
+    def has_delete_permission(self, request, obj=None):
+        # Deleting the row would disable 2FA without the log line and signal
+        # that the audited "Reset TOTP" action produces.
+        return False
+
     @admin.action(description="Reset TOTP (disable and delete secret and backup codes)")
     def reset_totp(self, request, queryset):
         for auth in queryset:

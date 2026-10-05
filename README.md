@@ -132,7 +132,8 @@ Notes:
   a backup code (case and dashes are ignored). `/backup-codes/` accepts only a
   TOTP code, so a backup code cannot mint more backup codes.
 - Each code is accepted once. Submitting the same code twice returns
-  `Invalid token`.
+  `Invalid token`; such replays do not count towards the lockout, since they
+  prove possession of the secret.
 - Before enrollment is complete, `/disable/` needs no token (there is no second
   factor to prove yet).
 - `otp_enabled` always equals `otp_verified`; it is deprecated and will be
@@ -156,9 +157,10 @@ class SensitiveView(APIView):
     permission_classes = [IsAuthenticated, IsTOTPVerified]
 ```
 
-The stamp records which user earned it and is ignored for any other user.
-Set `TOTP_SESSION_MAX_AGE` (seconds) to require re-validation periodically.
-Disabling TOTP clears the stamp. Use `IsTOTPEnrolled` to require that a user
+The stamp records which user earned it and a fingerprint of the enrollment,
+so it is ignored for any other user and stops working after a reset or
+re-enrollment. Set `TOTP_SESSION_MAX_AGE` (seconds) to require re-validation
+periodically. Disabling TOTP clears the stamp. Use `IsTOTPEnrolled` to require that a user
 has enabled TOTP at all.
 
 ### Token or JWT authentication
@@ -188,7 +190,7 @@ def is_second_factor_verified(request) -> bool:
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `TOTP_ISSUER_NAME` | `"drftotp"` | Issuer in the provisioning URI |
-| `TOTP_ACCOUNT_LABEL` | `None` | Account label: `None` = email, then username; or a user attribute name; or a callable / dotted path taking the user |
+| `TOTP_ACCOUNT_LABEL` | `None` | Account label: `None` = email, then username; or a user attribute or method name (e.g. `"get_full_name"`); or a callable / dotted path taking the user |
 | `TOTP_DIGITS` | `6` | Code length (6–8) |
 | `TOTP_PERIOD` | `30` | Time step in seconds |
 | `TOTP_VALID_WINDOW` | `1` | Steps accepted either side of now (clock drift) |
@@ -257,9 +259,10 @@ Failed attempts and lockouts are also logged at WARNING level on the
 
 ## Admin
 
-`TOTPAuth` is registered read-only. The secret is not displayed. Two actions
-are available: **Reset TOTP** (disables and deletes the secret and backup
-codes) and **Clear lockout**.
+`TOTPAuth` is registered read-only: rows cannot be added, edited or deleted,
+and the secret is never displayed. Two actions are available: **Reset TOTP**
+(disables and deletes the secret and backup codes, with the usual log line and
+`totp_disabled` signal) and **Clear lockout**.
 
 ## Client example
 

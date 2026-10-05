@@ -2,7 +2,7 @@ import logging
 from unittest import mock
 
 import pytest
-from django.db import DatabaseError, connection
+from django.db import DatabaseError, connection, transaction
 from rest_framework.test import APIClient
 
 from drf_totp import services, signals
@@ -289,3 +289,84 @@ class TestDisableIsAtomic:
         assert fresh.otp_verified is True
         assert fresh.otp_base32
         assert fresh.backup_codes.count() == 10
+
+
+class TestReplayDoesNotCountTowardsLockout:
+    """Regression: an honest double-submit of a correct code must not lock the account."""
+
+    def test_replays_are_rejected_but_not_counted(self, client, enrolled, urls, code, settings):
+        settings.TOTP_MAX_FAILED_ATTEMPTS = 2
+        settings.TOTP_THROTTLE_RATE = None
+        token = code(enrolled)
+        assert client.post(urls.validate, {"token": token}).status_code == 200
+        for _ in range(5):
+            assert client.post(urls.validate, {"token": token}).status_code == 400
+        enrolled.refresh_from_db()
+        assert enrolled.failed_attempts == 0
+        assert enrolled.is_locked is False
+        assert client.post(urls.validate, {"token": code(enrolled, 1)}).status_code == 200
+
+    def test_replay_still_signals_failure(self, client, enrolled, urls, code):
+        seen = []
+        handler = lambda sender, **kw: seen.append(kw["method"])  # noqa: E731
+        signals.totp_validation_failed.connect(handler)
+        try:
+            token = code(enrolled)
+            client.post(urls.validate, {"token": token})
+            client.post(urls.validate, {"token": token})
+        finally:
+            signals.totp_validation_failed.disconnect(handler)
+        assert seen == ["totp"]
+
+
+class TestSignalsFireOutsideTheRowLock:
+    """Receivers must not run while the TOTPAuth row is locked."""
+
+    @pytest.fixture
+    def depth_recorder(self):
+        depths = []
+
+        def handler(sender, **kwargs):
+            depths.append(len(connection.savepoint_ids))
+
+        signals.totp_validated.connect(handler)
+        signals.totp_validation_failed.connect(handler)
+        yield depths
+        signals.totp_validated.disconnect(handler)
+        signals.totp_validation_failed.disconnect(handler)
+
+    def test_totp_and_backup_paths(self, enrolled, code, depth_recorder):
+        baseline = len(connection.savepoint_ids)
+        assert services.verify_totp_token(enrolled, code(enrolled)) is True
+        assert services.verify_totp_token(enrolled, "000000") is False
+        codes = services.generate_backup_codes(enrolled)
+        assert services.use_backup_code(enrolled, codes[0]) is True
+        assert services.use_backup_code(enrolled, "AAAAA-AAAAA") is False
+        assert depth_recorder == [baseline] * 4
+
+    def test_locked_row_preloads_user(self, enrolled, django_assert_num_queries, code):
+        locked = services._lock(enrolled)
+        with django_assert_num_queries(0):
+            assert locked.user.pk == enrolled.user_id
+
+
+class TestBackupCodeIssueTakesRowLock:
+    def test_generate_backup_codes_locks_the_auth_row(self, enrolled):
+        with mock.patch.object(services, "_lock", wraps=services._lock) as lock:
+            services.generate_backup_codes(enrolled)
+        lock.assert_called_once_with(enrolled)
+        assert enrolled.backup_codes.count() == 10
+
+    def test_lock_runs_inside_a_transaction(self, enrolled):
+        seen = []
+        real = services._lock
+
+        def spy(auth):
+            seen.append(connection.in_atomic_block and len(connection.savepoint_ids))
+            return real(auth)
+
+        with mock.patch.object(services, "_lock", side_effect=spy):
+            services.generate_backup_codes(enrolled)
+        # one savepoint deeper than the test's own transaction
+        assert seen == [len(connection.savepoint_ids) + 1]
+        assert transaction.get_autocommit() is False

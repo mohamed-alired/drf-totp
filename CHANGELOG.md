@@ -31,8 +31,16 @@ Security-focused release. See "Upgrading to 0.2" in the README.
   `SECRET_KEY_FALLBACKS` are honoured; rotating `SECRET_KEY` without a fallback
   invalidates existing backup codes.
 - The session stamp used by `IsTOTPVerified` records the user it was issued
-  for and is ignored for any other user (relevant when token auth and session
-  cookies are used together).
+  for and a fingerprint of the enrollment it was earned with. It is ignored
+  for any other user (relevant when token auth and session cookies are used
+  together) and after a reset or re-enrollment, so a stamped session that was
+  compromised cannot outlive the secret.
+- A replayed code (already accepted once) is rejected but no longer counts
+  towards `TOTP_MAX_FAILED_ATTEMPTS`, so a client retry cannot lock the user out.
+- Issuing backup codes takes the same row lock as consuming them, so two
+  concurrent requests cannot leave a user with two live sets.
+- Rows cannot be deleted from the admin; the audited "Reset TOTP" action is the
+  only way to remove a second factor there.
 - The drf-totp views are excluded from `ATOMIC_REQUESTS`, so failed-attempt
   counters and lockouts persist even though the request ends in an error.
 
@@ -62,6 +70,12 @@ Security-focused release. See "Upgrading to 0.2" in the README.
 - `/otp/verify/` for a user who is already verified returns 400
   (`TOTP already enabled and verified.`) instead of re-verifying.
 - Enrollment is decided by `otp_verified` alone.
+- `TOTP_ACCOUNT_LABEL` naming a user method (for example `"get_full_name"`)
+  calls it instead of rendering the bound method.
+- Signals are dispatched after the database row lock is released, and the
+  locked row preloads its user.
+- A `TOTP_ENCRYPTION_KEY` of the wrong type is reported by `manage.py check`
+  (`drf_totp.E002`) instead of crashing it.
 - Minimum Python is 3.9; Django 4.2, 5.1 and 5.2 are tested.
 
 ### Deprecated

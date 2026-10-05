@@ -29,6 +29,10 @@ def _keys():
         return None
     if isinstance(key, (str, bytes)):
         return [key]
+    if not isinstance(key, (list, tuple)) or not all(isinstance(k, (str, bytes)) for k in key):
+        raise InvalidEncryptionKey(
+            "TOTP_ENCRYPTION_KEY must be a Fernet key string or a list of key strings."
+        )
     return list(key)
 
 

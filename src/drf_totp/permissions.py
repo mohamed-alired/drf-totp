@@ -17,9 +17,10 @@ class IsTOTPVerified(BasePermission):
         user = request.user
         if not user or not user.is_authenticated:
             return False
-        if not services.user_has_totp(user):
+        auth = services.get_verified_auth(user)
+        if auth is None:
             return True
-        return services.is_session_verified(request)
+        return services.is_session_verified(request, auth)
 
 
 class IsTOTPEnrolled(BasePermission):

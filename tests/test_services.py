@@ -32,6 +32,13 @@ class TestAccountLabel:
         user.first_name = ""
         assert services.get_account_label(user) == "alice"
 
+    def test_attribute_that_is_a_method_is_called(self, user, settings):
+        settings.TOTP_ACCOUNT_LABEL = "get_full_name"
+        user.first_name, user.last_name = "Alice", "Smith"
+        assert services.get_account_label(user) == "Alice Smith"
+        user.first_name = user.last_name = ""
+        assert services.get_account_label(user) == "alice"
+
     def test_callable(self, user, settings):
         settings.TOTP_ACCOUNT_LABEL = upper_label
         assert services.get_account_label(user) == "ALICE"
