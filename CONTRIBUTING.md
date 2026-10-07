@@ -33,6 +33,7 @@ CI runs the same commands across Python 3.9–3.13 and Django 4.2/5.1/5.2.
 ## Releasing
 
 1. Update `__version__` in `src/drf_totp/__init__.py` and `CHANGELOG.md`.
-2. Merge to `main`, then tag: `git tag v0.2.0 && git push origin v0.2.0`.
-3. The release workflow runs CI, publishes to PyPI via trusted publishing and
-   creates the GitHub release from the CHANGELOG section.
+2. Merge to `main`. Once CI succeeds, the release workflow publishes the new
+   version to PyPI (using the `PYPI_API_TOKEN` secret; a version that already
+   exists is skipped) and creates the `v<version>` GitHub release from the
+   CHANGELOG section.

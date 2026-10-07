@@ -1,71 +1,73 @@
 name: Release
 
-# Publishes to PyPI and creates a GitHub release when a tag like v0.2.0 is pushed.
-# The tag must match __version__ in src/drf_totp/__init__.py.
-#
-# PyPI trusted publishing must be configured for this repository:
-#   https://docs.pypi.org/trusted-publishers/  (workflow: release.yml, environment: pypi)
+# Runs after CI succeeds on main. Publishes the package version from
+# src/drf_totp/__init__.py to PyPI (skipped when that version already exists)
+# and creates or updates the matching GitHub release, as the earlier
+# push-to-main workflows did. Uses the PYPI_API_TOKEN repository secret.
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  check-version:
+  release:
+    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Tag matches package version
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Read package version
         run: |
           VERSION=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' src/drf_totp/__init__.py)
-          echo "package version: $VERSION, tag: ${GITHUB_REF_NAME}"
-          test "v$VERSION" = "$GITHUB_REF_NAME"
+          echo "Package version: $VERSION"
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
-  ci:
-    needs: check-version
-    uses: ./.github/workflows/ci.yml
+      - name: Build package
+        run: python -m build && twine check dist/*
 
-  publish:
-    needs: ci
-    runs-on: ubuntu-latest
-    environment: pypi
-    permissions:
-      id-token: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-      - uses: pypa/gh-action-pypi-publish@release/v1
-
-  github-release:
-    needs: publish
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-      - name: Extract release notes from CHANGELOG.md
+      - name: Publish to PyPI
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          if curl -fsSL "https://pypi.org/pypi/drf-totp/$VERSION/json" > /dev/null 2>&1; then
+            echo "Version $VERSION already exists on PyPI. Skipping upload."
+          else
+            twine upload --skip-existing dist/*
+          fi
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
           awk -v ver="$VERSION" '
             /^## \[/ { if (found) exit; if (index($0, "[" ver "]")) { found = 1; next } }
             found { print }
           ' CHANGELOG.md > notes.md
-          if [ ! -s notes.md ]; then echo "No CHANGELOG entry for $VERSION" > notes.md; fi
-          cat notes.md
-      - name: Create GitHub release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "$GITHUB_REF_NAME" \
-            --notes-file notes.md
+          if [ ! -s notes.md ]; then echo "Automated release for version $VERSION" > notes.md; fi
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "Release v$VERSION already exists. Updating..."
+            gh release edit "v$VERSION" --repo "$GITHUB_REPOSITORY" \
+              --title "Release $VERSION" --notes-file notes.md
+          else
+            echo "Creating release v$VERSION..."
+            gh release create "v$VERSION" dist/* --repo "$GITHUB_REPOSITORY" \
+              --target "${{ github.event.workflow_run.head_sha }}" \
+              --title "Release $VERSION" --notes-file notes.md
+          fi
