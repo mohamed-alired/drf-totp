@@ -1,0 +1,71 @@
+name: Release
+
+# Publishes to PyPI and creates a GitHub release when a tag like v0.2.0 is pushed.
+# The tag must match __version__ in src/drf_totp/__init__.py.
+#
+# PyPI trusted publishing must be configured for this repository:
+#   https://docs.pypi.org/trusted-publishers/  (workflow: release.yml, environment: pypi)
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  check-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches package version
+        run: |
+          VERSION=$(sed -n 's/^__version__ = "\(.*\)"/\1/p' src/drf_totp/__init__.py)
+          echo "package version: $VERSION, tag: ${GITHUB_REF_NAME}"
+          test "v$VERSION" = "$GITHUB_REF_NAME"
+
+  ci:
+    needs: check-version
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    needs: ci
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v ver="$VERSION" '
+            /^## \[/ { if (found) exit; if (index($0, "[" ver "]")) { found = 1; next } }
+            found { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then echo "No CHANGELOG entry for $VERSION" > notes.md; fi
+          cat notes.md
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file notes.md

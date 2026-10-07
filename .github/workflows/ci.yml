@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check src tests
+      - run: ruff format --check src tests
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        django-version: ["4.2", "5.1", "5.2", "6.0", "6.1"]
+        exclude:
+          # Django 5.x requires Python 3.10+, Django 6.x requires 3.12+,
+          # and Django 4.2 predates Python 3.13.
+          - python-version: "3.9"
+            django-version: "5.1"
+          - python-version: "3.9"
+            django-version: "5.2"
+          - python-version: "3.9"
+            django-version: "6.0"
+          - python-version: "3.9"
+            django-version: "6.1"
+          - python-version: "3.10"
+            django-version: "6.0"
+          - python-version: "3.10"
+            django-version: "6.1"
+          - python-version: "3.11"
+            django-version: "6.0"
+          - python-version: "3.11"
+            django-version: "6.1"
+          - python-version: "3.13"
+            django-version: "4.2"
+    name: test (py${{ matrix.python-version }}, django ${{ matrix.django-version }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]" "django~=${{ matrix.django-version }}.0"
+      - name: Check migrations are up to date
+        env:
+          DJANGO_SETTINGS_MODULE: tests.settings
+          PYTHONPATH: src:.
+        run: python -m django makemigrations drf_totp --check --dry-run
+      - name: Run tests (SQLite; every test runs with encryption off and on)
+        run: pytest --cov --cov-report=term-missing
+
+  test-postgres:
+    # Real SELECT ... FOR UPDATE: concurrency, HTTP end-to-end and load tests run here.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python-version: "3.11"
+            django-version: "4.2"
+          - python-version: "3.12"
+            django-version: "5.2"
+          - python-version: "3.13"
+            django-version: "6.1"
+    name: test-postgres (py${{ matrix.python-version }}, django ${{ matrix.django-version }})
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: drf
+          POSTGRES_PASSWORD: drf
+          POSTGRES_DB: drf_totp
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U drf" --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: 127.0.0.1
+      PGUSER: drf
+      PGPASSWORD: drf
+      PGDATABASE: drf_totp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]" "django~=${{ matrix.django-version }}.0" "psycopg[binary]"
+      - name: Run tests on PostgreSQL (unit, integration, e2e, perf, load)
+        run: pytest --ds=tests.settings_postgres -s -m "load" && pytest --ds=tests.settings_postgres
+      - name: Run tests with naive local datetimes (USE_TZ=False, Asia/Tokyo)
+        run: pytest --ds=tests.settings_tokyo -q
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
