@@ -56,6 +56,9 @@ Security-focused release. See "Upgrading to 0.2" in the README.
 - Settings: `TOTP_ACCOUNT_LABEL`, `TOTP_DIGITS`, `TOTP_PERIOD`,
   `TOTP_VALID_WINDOW`, `TOTP_BACKUP_CODES_ENABLED`, `TOTP_BACKUP_CODE_COUNT`.
 - System checks for misconfigured keys, throttle rates and digit counts.
+- Test layers: integration (CSRF, audit trail, encryption roll-out, 0.1
+  migration path, PostgreSQL row-lock concurrency), end-to-end over HTTP, and
+  performance guards (query budgets, scale, load).
 - `last_used_at` and `backup_codes_remaining` in the status response.
 - `method` (`"totp"` or `"backup_code"`) in the validate response.
 
@@ -76,7 +79,8 @@ Security-focused release. See "Upgrading to 0.2" in the README.
   locked row preloads its user.
 - A `TOTP_ENCRYPTION_KEY` of the wrong type is reported by `manage.py check`
   (`drf_totp.E002`) instead of crashing it.
-- Minimum Python is 3.9; Django 4.2, 5.1 and 5.2 are tested.
+- Minimum Python is 3.9; Django 4.2, 5.1, 5.2, 6.0 and 6.1 are tested, on
+  SQLite and PostgreSQL, with secrets stored in plaintext and encrypted.
 
 ### Deprecated
 - `otp_enabled` duplicates `otp_verified` and will be removed in 0.3.

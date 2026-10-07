@@ -20,7 +20,7 @@ own views.
 - `IsTOTPVerified` / `IsTOTPEnrolled` permissions to gate your views
 - Optional Fernet encryption of secrets at rest, with key rotation
 - Signals, logging and a read-only admin that never shows the secret
-- Django 4.2 – 5.2, Python 3.9 – 3.13, DRF 3.14+
+- Django 4.2 – 6.1, Python 3.9 – 3.13, DRF 3.14+
 
 ## Installation
 
@@ -301,8 +301,19 @@ See [CHANGELOG.md](CHANGELOG.md) for the complete list.
 ```bash
 pip install -e ".[dev]"
 ruff check src tests && ruff format --check src tests
-pytest --cov
+pytest --cov                              # SQLite; every test runs with encryption off and on
+pytest --ds=tests.settings_postgres       # PostgreSQL: adds concurrency, HTTP e2e and load tests
+pytest --ds=tests.settings_tokyo          # USE_TZ=False in a non-UTC zone
+pytest -m "not load"                      # skip the load test
 ```
+
+The suite has four layers: unit tests (`tests/test_*.py`), integration tests
+(`tests/integration/`: full middleware stack with CSRF, audit trail, encryption
+roll-out, migrations from 0.1, and row-lock concurrency on PostgreSQL),
+end-to-end tests over real HTTP (`tests/e2e/`, pytest-django's live server),
+and performance guards (`tests/perf/`: per-endpoint query budgets, behaviour
+with thousands of rows, and a threaded load test). CI runs them on Python
+3.9–3.13 and Django 4.2–6.1, on SQLite and PostgreSQL.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 

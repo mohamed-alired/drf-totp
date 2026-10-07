@@ -20,6 +20,8 @@ classifiers = [
     "Framework :: Django :: 4.2",
     "Framework :: Django :: 5.1",
     "Framework :: Django :: 5.2",
+    "Framework :: Django :: 6.0",
+    "Framework :: Django :: 6.1",
     "Intended Audience :: Developers",
     "Operating System :: OS Independent",
     "Programming Language :: Python",
@@ -48,6 +50,7 @@ test = [
     "pytest-cov",
     "freezegun>=1.2",
     "cryptography>=41.0",
+    "requests>=2.28",
 ]
 dev = [
     "drf-totp[test]",
@@ -84,6 +87,12 @@ pythonpath = ["src", "."]
 testpaths = ["tests"]
 addopts = "-ra"
 filterwarnings = ["error::DeprecationWarning:drf_totp"]
+markers = [
+    "e2e: end-to-end tests over real HTTP (live_server)",
+    "perf: performance guards (query budgets, scale)",
+    "load: concurrent load test over HTTP; needs PostgreSQL",
+    "postgres: needs PostgreSQL for real row locks (skipped elsewhere)",
+]
 
 [tool.coverage.run]
 source = ["drf_totp"]

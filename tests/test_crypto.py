@@ -21,8 +21,15 @@ def raw_secret(pk):
 
 
 class TestEncryptedField:
-    def test_plaintext_without_key(self, generated):
+    def test_plaintext_without_key(self, generated, settings):
+        settings.TOTP_ENCRYPTION_KEY = None
+        generated.save()
         assert raw_secret(generated.pk) == generated.otp_base32
+
+    def test_encrypted_in_encrypted_mode(self, generated, encryption_mode):
+        raw = raw_secret(generated.pk)
+        assert raw.startswith("fernet$") == (encryption_mode == "encrypted")
+        assert TOTPAuth.objects.get(pk=generated.pk).otp_base32 == generated.otp_base32
 
     def test_encrypted_with_key(self, client, user, urls, frozen, settings, code):
         settings.TOTP_ENCRYPTION_KEY = KEY1
@@ -54,7 +61,10 @@ class TestEncryptedField:
             TOTPAuth.objects.get(pk=generated.pk)
 
     def test_legacy_plaintext_readable_with_key(self, generated, settings):
+        settings.TOTP_ENCRYPTION_KEY = None
+        generated.save()
         plain = raw_secret(generated.pk)
+        assert not plain.startswith("fernet$")
         settings.TOTP_ENCRYPTION_KEY = KEY1
         assert TOTPAuth.objects.get(pk=generated.pk).otp_base32 == plain
 
@@ -70,11 +80,14 @@ class TestEncryptedField:
 
 
 class TestReencryptCommand:
-    def test_requires_key(self):
+    def test_requires_key(self, settings):
+        settings.TOTP_ENCRYPTION_KEY = None
         with pytest.raises(CommandError):
             call_command("totp_reencrypt")
 
     def test_encrypt_then_decrypt(self, generated, settings, capsys):
+        settings.TOTP_ENCRYPTION_KEY = None
+        generated.save()  # start from a plaintext row whatever the suite-wide mode
         secret = generated.otp_base32
         settings.TOTP_ENCRYPTION_KEY = KEY1
         call_command("totp_reencrypt")
@@ -146,11 +159,13 @@ class TestFernetCache:
 
 
 class TestMissingCryptography:
-    def test_check_reports_missing_library(self, settings, monkeypatch):
+    def test_check_reports_missing_library(self, settings, monkeypatch, generated):
         import sys
 
         from django.core.checks import run_checks
 
+        settings.TOTP_ENCRYPTION_KEY = None
+        generated.save()  # plaintext, so the row stays readable while the library is "missing"
         crypto._build_fernet.cache_clear()
         monkeypatch.setitem(sys.modules, "cryptography.fernet", None)
         settings.TOTP_ENCRYPTION_KEY = KEY1

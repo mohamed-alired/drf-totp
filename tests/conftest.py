@@ -13,6 +13,8 @@ from drf_totp.models import TOTPAuth
 
 FROZEN = "2026-01-01 12:00:00"
 PASSWORD = "testpass123"
+#: A fixed Fernet key so the "encrypted" run is reproducible. Test-only.
+ENCRYPTION_TEST_KEY = "xxOkCb6NfYl7WeWr7Fs0xzk_plMqz3VNJxqLtWRmlH0="
 
 
 class Urls:
@@ -24,6 +26,16 @@ class Urls:
     backup = reverse("drf_totp:backup-codes")
     protected = reverse("protected")
     enrolled_only = reverse("enrolled-only")
+
+
+@pytest.fixture(autouse=True, params=["plain", "encrypted"])
+def encryption_mode(request, settings):
+    """Run every test twice: secrets stored in plaintext, and encrypted at rest.
+
+    Tests that need one specific mode set ``settings.TOTP_ENCRYPTION_KEY`` themselves.
+    """
+    settings.TOTP_ENCRYPTION_KEY = ENCRYPTION_TEST_KEY if request.param == "encrypted" else None
+    return request.param
 
 
 @pytest.fixture(autouse=True)
